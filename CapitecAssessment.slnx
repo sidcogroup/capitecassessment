@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/docs/">
+    <File Path="docs/database-schema.md" />
+  </Folder>
+  <Folder Name="/src/api/">
+    <Project Path="src/api/CapitecAssessment/CapitecAssessment.csproj" />
+    <Project Path="src/api/CapitecAssessment.Tests/CapitecAssessment.Tests.csproj" />
+  </Folder>
+</Solution>

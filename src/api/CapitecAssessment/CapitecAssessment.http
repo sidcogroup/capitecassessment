@@ -1,0 +1,6 @@
+@CapitecAssessment_HostAddress = http://localhost:5129
+
+GET {{CapitecAssessment_HostAddress}}/api/v1/health
+Accept: application/json
+
+###
