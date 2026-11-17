@@ -170,6 +170,17 @@ public sealed class FakeAccountRepository : IAccountRepository
     }
 }
 
+/// <summary>In-memory stand-in for UserRepository.</summary>
+public sealed class FakeUserRepository : IUserRepository
+{
+    private readonly Dictionary<long, UserProfileResponse> _profiles = new();
+
+    public void Add(UserProfileResponse profile) => _profiles[profile.UserId] = profile;
+
+    public Task<UserProfileResponse?> GetProfileAsync(long userId, CancellationToken cancellationToken) =>
+        Task.FromResult(_profiles.GetValueOrDefault(userId));
+}
+
 public static class TestOtp
 {
     public static readonly string HashKey = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());

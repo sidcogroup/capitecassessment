@@ -25,6 +25,11 @@ public class RequestLoggingMiddleware : IMiddleware
             _logger.LogInformation("HTTP {RequestMethod} {RequestPath} completed with status {StatusCode} in {ElapsedMilliseconds}ms",
                 context.Request.Method, context.Request.Path, context.Response.StatusCode, stopwatch.ElapsedMilliseconds);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // Client aborted; not a failure. Let ExceptionHandlingMiddleware set the 499.
+            throw;
+        }
         catch (Exception)
         {
             // Log and rethrow - ExceptionHandlingMiddleware turns it into a response.
