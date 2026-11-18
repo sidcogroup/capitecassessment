@@ -13,13 +13,30 @@ public class AuthenticationRepository : IAuthenticationRepository
         _db = db;
     }
 
-    public Task<AuthenticatedUser?> FindUserByAccountNumberAsync(string accountNumber, CancellationToken cancellationToken)
+    public Task<AuthenticatedUser?> FindUserByIdentifierAsync(string identifier, CancellationToken cancellationToken)
     {
-        // accounts.account_number is unique; any of a user's accounts resolves to that user.
         // The OTP goes to the contact email when there is one, otherwise the login email.
+        if (!SignInIdentifier.IsAccountNumber(identifier))
+        {
+            // A username signs in a consultant only. A customer's username must never work here,
+            // otherwise it would bypass the account-number step; it resolves to "not found" like any unknown value.
+            // users.username is unique.
+            return _db.Users
+                .AsNoTracking()
+                .Where(u => u.Username == identifier && u.Role == UserRoles.Consultant)
+                .Select(u => new AuthenticatedUser(
+                    u.Id,
+                    u.Username,
+                    u.Role,
+                    u.Contact != null ? u.Contact.ContactEmail : u.Email))
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+
+        // accounts.account_number is unique; any of a user's accounts resolves to that user.
+        // Only Customers sign in this way, so a consultant who also owns an account cannot.
         return _db.Accounts
             .AsNoTracking()
-            .Where(a => a.AccountNumber == accountNumber)
+            .Where(a => a.AccountNumber == identifier && a.User!.Role == UserRoles.Customer)
             .Select(a => new AuthenticatedUser(
                 a.User!.Id,
                 a.User.Username,

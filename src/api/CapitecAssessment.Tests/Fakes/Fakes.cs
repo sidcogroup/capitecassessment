@@ -35,7 +35,7 @@ public sealed class FakeAuthenticationRepository : IAuthenticationRepository
         lock (_gate) { _accounts[accountNumber] = user; }
     }
 
-    public Task<AuthenticatedUser?> FindUserByAccountNumberAsync(string accountNumber, CancellationToken cancellationToken)
+    public Task<AuthenticatedUser?> FindUserByIdentifierAsync(string accountNumber, CancellationToken cancellationToken)
     {
         lock (_gate) { return Task.FromResult(_accounts.GetValueOrDefault(accountNumber)); }
     }
@@ -108,6 +108,134 @@ public sealed class FakeMessagingService : IMessagingService
 
         Sent.Enqueue(new SentOtp(userId, recipientEmail, code, validity));
         return Task.CompletedTask;
+    }
+
+    public Task SendDisputeUpdateAsync(
+        long userId, string recipientEmail, Guid disputeId, string disputeReference, string status, string note,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+}
+
+/// <summary>In-memory stand-in for ConsultantRepository, using the same transition rule.</summary>
+public sealed class FakeConsultantRepository : IConsultantRepository
+{
+    public sealed record FakeClient(ClientProfileResponse Profile, List<(ClientAccountResponse Account, List<TransactionResponse> Transactions)> Accounts);
+
+    public sealed class FakeDispute
+    {
+        public required DisputeResponse Response { get; set; }
+        public required long ClientUserId { get; init; }
+        public required string ClientEmail { get; init; }
+        public List<(string Status, string Note, long ChangedBy)> History { get; } = new();
+    }
+
+    private readonly List<FakeClient> _clients = new();
+    private readonly List<FakeDispute> _disputes = new();
+
+    public IReadOnlyList<FakeDispute> Disputes => _disputes;
+
+    public void AddClient(ClientProfileResponse profile, params (ClientAccountResponse Account, TransactionResponse[] Transactions)[] accounts) =>
+        _clients.Add(new FakeClient(profile, accounts.Select(a => (a.Account, a.Transactions.ToList())).ToList()));
+
+    public FakeDispute AddDispute(long clientUserId, string clientEmail, string reference, string status)
+    {
+        var dispute = new FakeDispute
+        {
+            ClientUserId = clientUserId,
+            ClientEmail = clientEmail,
+            Response = new DisputeResponse { Id = Guid.NewGuid(), DisputeReference = reference, Reason = "Not me", Status = status }
+        };
+        _disputes.Add(dispute);
+        return dispute;
+    }
+
+    public Task<PagedResponse<ClientSummaryResponse>> GetClientsAsync(int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var all = _clients.Select(c => c.Profile).OrderBy(p => p.LastName).ThenBy(p => p.UserId).ToList();
+        return Task.FromResult(new PagedResponse<ClientSummaryResponse>
+        {
+            Items = all.Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(p => new ClientSummaryResponse
+                {
+                    UserId = p.UserId, Username = p.Username, FirstName = p.FirstName, LastName = p.LastName, Email = p.Email
+                }).ToList(),
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = all.Count
+        });
+    }
+
+    public Task<ClientProfileResponse?> GetClientProfileAsync(long userId, CancellationToken cancellationToken) =>
+        Task.FromResult(_clients.FirstOrDefault(c => c.Profile.UserId == userId)?.Profile);
+
+    public Task<IReadOnlyList<ClientAccountResponse>?> GetClientAccountsAsync(long userId, CancellationToken cancellationToken)
+    {
+        var client = _clients.FirstOrDefault(c => c.Profile.UserId == userId);
+        return Task.FromResult<IReadOnlyList<ClientAccountResponse>?>(client?.Accounts.Select(a => a.Account).ToList());
+    }
+
+    public Task<PagedResponse<TransactionResponse>?> GetAccountTransactionsAsync(
+        Guid accountId, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var row = _clients.SelectMany(c => c.Accounts).FirstOrDefault(a => a.Account.AccountId == accountId);
+        if (row.Account is null)
+        {
+            return Task.FromResult<PagedResponse<TransactionResponse>?>(null);
+        }
+
+        var ordered = row.Transactions.OrderByDescending(t => t.TransactionDate).ThenBy(t => t.Id).ToList();
+        return Task.FromResult<PagedResponse<TransactionResponse>?>(new PagedResponse<TransactionResponse>
+        {
+            Items = ordered.Skip((page - 1) * pageSize).Take(pageSize).ToList(),
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = ordered.Count
+        });
+    }
+
+    public Task<PagedResponse<DisputeResponse>> GetAllDisputesAsync(int page, int pageSize, CancellationToken cancellationToken) =>
+        Task.FromResult(PageDisputes(_disputes, page, pageSize));
+
+    public Task<PagedResponse<DisputeResponse>?> GetClientDisputesAsync(
+        long userId, int page, int pageSize, CancellationToken cancellationToken) =>
+        Task.FromResult<PagedResponse<DisputeResponse>?>(
+            _clients.Any(c => c.Profile.UserId == userId)
+                ? PageDisputes(_disputes.Where(d => d.ClientUserId == userId).ToList(), page, pageSize)
+                : null);
+
+    private static PagedResponse<DisputeResponse> PageDisputes(IReadOnlyCollection<FakeDispute> source, int page, int pageSize) =>
+        new()
+        {
+            Items = source.OrderByDescending(d => d.Response.CreatedAt).Select(d => d.Response)
+                .Skip((page - 1) * pageSize).Take(pageSize).ToList(),
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = source.Count
+        };
+
+    public Task<UpdateDisputeResult> UpdateDisputeStatusAsync(
+        long consultantId, string disputeReference, string newStatus, string note, CancellationToken cancellationToken)
+    {
+        var dispute = _disputes.FirstOrDefault(d => d.Response.DisputeReference == disputeReference);
+        if (dispute is null)
+        {
+            return Task.FromResult(new UpdateDisputeResult(UpdateDisputeOutcome.NotFound));
+        }
+
+        if (!CapitecAssessment.DataAccess.ConsultantRepository.IsAllowedTransition(dispute.Response.Status, newStatus))
+        {
+            return Task.FromResult(new UpdateDisputeResult(UpdateDisputeOutcome.InvalidTransition));
+        }
+
+        var current = dispute.Response;
+        dispute.Response = new DisputeResponse
+        {
+            Id = current.Id, DisputeReference = current.DisputeReference, TransactionId = current.TransactionId,
+            Reason = current.Reason, Details = current.Details, Status = newStatus,
+            CreatedAt = current.CreatedAt, UpdatedAt = DateTime.UtcNow
+        };
+        dispute.History.Add((newStatus, note, consultantId));
+        return Task.FromResult(new UpdateDisputeResult(UpdateDisputeOutcome.Updated, dispute.Response, dispute.ClientUserId, dispute.ClientEmail));
     }
 }
 

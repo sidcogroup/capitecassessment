@@ -43,7 +43,7 @@ public class AuthenticateController : ControllerBase
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<RequestOtpResponse>> RequestOtp([FromBody] RequestOtpRequest request, CancellationToken cancellationToken)
     {
-        await _authenticationService.RequestOtpAsync(request.AccountNumber, cancellationToken);
+        await _authenticationService.RequestOtpAsync(request.ResolvedIdentifier, cancellationToken);
         return Ok(new RequestOtpResponse());
     }
 
@@ -57,7 +57,7 @@ public class AuthenticateController : ControllerBase
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<SessionResponse>> VerifyOtp([FromBody] VerifyOtpRequest request, CancellationToken cancellationToken)
     {
-        var user = await _authenticationService.VerifyOtpAsync(request.AccountNumber, request.Code, cancellationToken);
+        var user = await _authenticationService.VerifyOtpAsync(request.ResolvedIdentifier, request.Code, cancellationToken);
         if (user is null)
         {
             // One response for every failure reason (unknown account, wrong, expired, used, locked).

@@ -47,7 +47,7 @@ public class AuthenticationRepositoryTests
         await using var _ = db;
         var repository = new AuthenticationRepository(db);
 
-        var found = await repository.FindUserByAccountNumberAsync(accountNumber, CancellationToken.None);
+        var found = await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None);
 
         Assert.NotNull(found);
         Assert.Equal(user.Id, found.UserId);
@@ -61,8 +61,31 @@ public class AuthenticationRepositoryTests
         await using var _ = db;
         var repository = new AuthenticationRepository(db);
 
-        Assert.Equal(user.Email, (await repository.FindUserByAccountNumberAsync(accountNumber, CancellationToken.None))!.Email);
-        Assert.Null(await repository.FindUserByAccountNumberAsync("0000000000", CancellationToken.None));
+        Assert.Equal(user.Email, (await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None))!.Email);
+        Assert.Null(await repository.FindUserByIdentifierAsync("0000000000", CancellationToken.None));
+    }
+
+    [PostgresFact]
+    public async Task FindUserByIdentifier_Username_ResolvesAConsultantOnly()
+    {
+        var (db, user, accountNumber) = await SeedAsync(withContact: true);
+        await using var _ = db;
+        var repository = new AuthenticationRepository(db);
+
+        // The seeded user is a Customer: their username must not sign them in, and their account number still does.
+        Assert.Null(await repository.FindUserByIdentifierAsync(user.Username, CancellationToken.None));
+        Assert.NotNull(await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None));
+
+        // Promoted to Consultant: the username now works (to the contact email), the account number no longer does.
+        user.Role = UserRoles.Consultant;
+        await db.SaveChangesAsync();
+
+        var found = await repository.FindUserByIdentifierAsync(user.Username, CancellationToken.None);
+        Assert.NotNull(found);
+        Assert.Equal(user.Id, found.UserId);
+        Assert.Equal(UserRoles.Consultant, found.Role);
+        Assert.StartsWith("contact-", found.Email);
+        Assert.Null(await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None));
     }
 
     [PostgresFact]

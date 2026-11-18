@@ -24,7 +24,9 @@ namespace CapitecAssessment.Tests.Controllers;
 public class AuthenticateApiTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private const string AccountNumber = "1234567890";
+    private const string ConsultantUsername = "consultant1";
     private static readonly AuthenticatedUser User = new(5550001111, "thandi", UserRoles.Customer, "thandi@example.test");
+    private static readonly AuthenticatedUser Consultant = new(5550002222, ConsultantUsername, UserRoles.Consultant, "consultant@example.test");
 
     private readonly WebApplicationFactory<Program> _baseFactory;
 
@@ -39,6 +41,7 @@ public class AuthenticateApiTests : IClassFixture<WebApplicationFactory<Program>
     {
         var repository = new FakeAuthenticationRepository();
         repository.AddAccount(AccountNumber, User);
+        repository.AddAccount(ConsultantUsername, Consultant); // the fake keys by whatever identifier the user types
         var email = new FakeEmailSender();
 
         var factory = _baseFactory.WithWebHostBuilder(builder =>
@@ -79,9 +82,12 @@ public class AuthenticateApiTests : IClassFixture<WebApplicationFactory<Program>
     [InlineData("")]
     [InlineData("123456789")]     // 9 digits
     [InlineData("12345678901")]   // 11 digits
-    [InlineData("12345abcde")]
+    [InlineData("ab")]            // username too short
+    [InlineData("has space")]
+    [InlineData("bad!name")]
+    [InlineData("12345678-90")]   // looks numeric but is not a 10-digit account number and has no letter
     [InlineData("١٢٣٤٥٦٧٨٩٠")]    // Arabic-Indic digits: \d would accept these, [0-9] does not
-    public async Task RequestOtp_MalformedAccountNumber_Returns400(string accountNumber)
+    public async Task RequestOtp_MalformedIdentifier_Returns400(string accountNumber)
     {
         var app = CreateApp();
 
@@ -89,6 +95,55 @@ public class AuthenticateApiTests : IClassFixture<WebApplicationFactory<Program>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Empty(app.Email.Sent);
+    }
+
+    [Fact]
+    public async Task RequestOtp_AcceptsIdentifierAndTheOlderAccountNumberField()
+    {
+        var app = CreateApp();
+
+        var byIdentifier = await app.Client.PostAsJsonAsync("/api/v1/authenticate/request-otp", new { identifier = AccountNumber });
+        var byAlias = await app.Client.PostAsJsonAsync("/api/v1/authenticate/request-otp", new { accountNumber = AccountNumber });
+
+        Assert.Equal(HttpStatusCode.OK, byIdentifier.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, byAlias.StatusCode);
+    }
+
+    [Fact]
+    public async Task RequestOtp_TwoDifferentValues_Returns400()
+    {
+        var app = CreateApp();
+
+        var response = await app.Client.PostAsJsonAsync(
+            "/api/v1/authenticate/request-otp", new { identifier = AccountNumber, accountNumber = "0000000000" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(app.Email.Sent);
+    }
+
+    [Fact]
+    public async Task SignIn_ConsultantByUsername_ReturnsAConsultantSession()
+    {
+        var app = CreateApp();
+
+        await RequestOtp(app.Client, ConsultantUsername);
+        var verify = await VerifyOtp(app.Client, ConsultantUsername, CodeFrom(app.Email));
+
+        Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
+        Assert.Equal("consultant@example.test", app.Email.Sent.Last().Recipient);
+        var session = await verify.Content.ReadFromJsonAsync<SessionResponse>();
+        Assert.Equal(UserRoles.Consultant, session!.Role);
+        Assert.Equal(ConsultantUsername, session.Username);
+    }
+
+    [Fact]
+    public async Task VerifyOtp_UnknownUsername_Returns401()
+    {
+        var app = CreateApp();
+
+        var response = await VerifyOtp(app.Client, "nobody.here", "123456");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
