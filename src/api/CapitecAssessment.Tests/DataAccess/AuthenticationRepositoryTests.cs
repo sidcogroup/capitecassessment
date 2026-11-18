@@ -4,15 +4,25 @@ using CapitecAssessment.Models;
 namespace CapitecAssessment.Tests.DataAccess;
 
 /// <summary>
-/// The conditional UPDATEs only mean something against real PostgreSQL. Each test runs in a
-/// transaction that is rolled back. Skipped unless CAPITEC_TEST_CONNECTION is set.
+/// Tests for <see cref="AuthenticationRepository"/> against a REAL PostgreSQL database.
+///
+/// Why a real database: the "use a pin only once" and "count wrong guesses" rules rely on SQL
+/// conditional UPDATEs (update only if still unused / still under the limit). Those guarantees only
+/// hold in a real database.
+///
+/// Each test runs inside a database transaction that is never committed, so nothing is left behind.
+/// Skipped unless the CAPITEC_TEST_CONNECTION environment variable is set (see <see cref="PostgresDbTests"/>).
 /// </summary>
 public class AuthenticationRepositoryTests
 {
+    /// <summary>
+    /// Saves a new customer with one account. If <paramref name="withContact"/> is true, the user also gets a
+    /// separate contact email starting with "contact-" (used to tell the two email addresses apart in tests).
+    /// </summary>
     private static async Task<(ApplicationDbContext Db, User User, string AccountNumber)> SeedAsync(bool withContact)
     {
         var db = PostgresTestDb.NewContext();
-        await db.Database.BeginTransactionAsync();
+        await db.Database.BeginTransactionAsync(); // rolled back automatically when the context is disposed
 
         var suffix = Guid.NewGuid().ToString("N")[..10];
         var user = new User { Email = $"{suffix}@example.test", Username = $"u{suffix}" };
@@ -31,6 +41,7 @@ public class AuthenticationRepositoryTests
         return (db, user, accountNumber);
     }
 
+    /// <summary>A stored pin record, created at <paramref name="now"/> and expiring 5 minutes later.</summary>
     private static OtpCode NewOtp(long userId, DateTime now) => new()
     {
         Id = Guid.NewGuid(),
@@ -40,6 +51,7 @@ public class AuthenticationRepositoryTests
         ExpiresAt = now.AddMinutes(5)
     };
 
+    /// <summary>When a user has a separate contact email, the pin is sent there rather than to their login email.</summary>
     [PostgresFact]
     public async Task FindUserByAccountNumber_PrefersContactEmail()
     {
@@ -54,6 +66,7 @@ public class AuthenticationRepositoryTests
         Assert.StartsWith("contact-", found.Email);
     }
 
+    /// <summary>Without a contact email, the login email is used. An unknown account number finds nobody.</summary>
     [PostgresFact]
     public async Task FindUserByAccountNumber_FallsBackToLoginEmail_AndReturnsNullWhenMissing()
     {
@@ -61,10 +74,16 @@ public class AuthenticationRepositoryTests
         await using var _ = db;
         var repository = new AuthenticationRepository(db);
 
-        Assert.Equal(user.Email, (await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None))!.Email);
-        Assert.Null(await repository.FindUserByIdentifierAsync("0000000000", CancellationToken.None));
+        var found = await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None);
+        var nobody = await repository.FindUserByIdentifierAsync("0000000000", CancellationToken.None);
+
+        Assert.Equal(user.Email, found!.Email);
+        Assert.Null(nobody);
     }
 
+    /// <summary>
+    /// Customers sign in with an account number; consultants sign in with a username. Never the other way round.
+    /// </summary>
     [PostgresFact]
     public async Task FindUserByIdentifier_Username_ResolvesAConsultantOnly()
     {
@@ -72,14 +91,15 @@ public class AuthenticationRepositoryTests
         await using var _ = db;
         var repository = new AuthenticationRepository(db);
 
-        // The seeded user is a Customer: their username must not sign them in, and their account number still does.
+        // While a Customer: the username does not sign them in, but the account number does.
         Assert.Null(await repository.FindUserByIdentifierAsync(user.Username, CancellationToken.None));
         Assert.NotNull(await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None));
 
-        // Promoted to Consultant: the username now works (to the contact email), the account number no longer does.
+        // Promote them to Consultant.
         user.Role = UserRoles.Consultant;
         await db.SaveChangesAsync();
 
+        // Now the username works (and uses the contact email), and the account number no longer does.
         var found = await repository.FindUserByIdentifierAsync(user.Username, CancellationToken.None);
         Assert.NotNull(found);
         Assert.Equal(user.Id, found.UserId);
@@ -88,6 +108,13 @@ public class AuthenticationRepositoryTests
         Assert.Null(await repository.FindUserByIdentifierAsync(accountNumber, CancellationToken.None));
     }
 
+    /// <summary>
+    /// The full life of a stored pin:
+    ///   - the newest pin is the one that counts,
+    ///   - guesses are counted and capped at the limit,
+    ///   - a pin can be used up only once,
+    ///   - an expired pin accepts no guesses.
+    /// </summary>
     [PostgresFact]
     public async Task OtpLifecycle_AttemptsCappedAndConsumedOnce()
     {
@@ -101,16 +128,20 @@ public class AuthenticationRepositoryTests
         await repository.AddOtpAsync(older, CancellationToken.None);
         await repository.AddOtpAsync(latest, CancellationToken.None);
 
+        // The newest pin is returned.
         Assert.Equal(latest.Id, (await repository.GetLatestOtpAsync(user.Id, CancellationToken.None))!.Id);
 
-        Assert.True(await repository.TryReserveAttemptAsync(latest.Id, 2, now, CancellationToken.None));
-        Assert.True(await repository.TryReserveAttemptAsync(latest.Id, 2, now, CancellationToken.None));
-        Assert.False(await repository.TryReserveAttemptAsync(latest.Id, 2, now, CancellationToken.None));
+        // With a limit of 2 guesses: the first two are allowed, the third is refused.
+        const int maxGuesses = 2;
+        Assert.True(await repository.TryReserveAttemptAsync(latest.Id, maxGuesses, now, CancellationToken.None));
+        Assert.True(await repository.TryReserveAttemptAsync(latest.Id, maxGuesses, now, CancellationToken.None));
+        Assert.False(await repository.TryReserveAttemptAsync(latest.Id, maxGuesses, now, CancellationToken.None));
 
+        // The pin can be marked as used once; a second attempt to use it fails.
         Assert.True(await repository.TryConsumeAsync(latest.Id, now, CancellationToken.None));
         Assert.False(await repository.TryConsumeAsync(latest.Id, now, CancellationToken.None));
 
-        // Expired codes cannot be attempted.
+        // 10 minutes later the older pin has expired, so no guess is allowed even though it has guesses left.
         Assert.False(await repository.TryReserveAttemptAsync(older.Id, 3, now.AddMinutes(10), CancellationToken.None));
     }
 }
