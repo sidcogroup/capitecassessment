@@ -50,7 +50,7 @@ public class AccountController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<TransactionResponse>>> GetTransactions(
-        [RegularExpression("^[0-9]{10}$", ErrorMessage = "Account number must be exactly 10 digits.")] string accountNumber,
+        [RegularExpression(@"^[0-9]{10}\z", ErrorMessage = "Account number must be exactly 10 digits.")] string accountNumber,
         [FromQuery] TransactionsQueryRequest query,
         CancellationToken cancellationToken)
     {

@@ -31,12 +31,12 @@ public class AuthenticationService : IAuthenticationService
         _logger = logger;
     }
 
-    public async Task RequestOtpAsync(string accountNumber, CancellationToken cancellationToken)
+    public async Task RequestOtpAsync(string identifier, CancellationToken cancellationToken)
     {
-        var user = await _repository.FindUserByAccountNumberAsync(accountNumber, cancellationToken);
+        var user = await _repository.FindUserByIdentifierAsync(identifier, cancellationToken);
         if (user is null)
         {
-            _logger.LogInformation("OTP requested for unknown account {AccountNumber}", Mask(accountNumber));
+            _logger.LogInformation("OTP requested for unknown identifier {Identifier}", Mask(identifier));
             return;
         }
 
@@ -64,7 +64,7 @@ public class AuthenticationService : IAuthenticationService
 
         if (_options.LogCodeToConsole)
         {
-            _logger.LogWarning("DEV ONLY - OTP for account {AccountNumber} (user {UserId}): {Code}", Mask(accountNumber), user.UserId, code);
+            _logger.LogWarning("DEV ONLY - OTP for {Identifier} (user {UserId}): {Code}", Mask(identifier), user.UserId, code);
         }
 
         try
@@ -79,9 +79,9 @@ public class AuthenticationService : IAuthenticationService
         }
     }
 
-    public async Task<AuthenticatedUser?> VerifyOtpAsync(string accountNumber, string code, CancellationToken cancellationToken)
+    public async Task<AuthenticatedUser?> VerifyOtpAsync(string identifier, string code, CancellationToken cancellationToken)
     {
-        var user = await _repository.FindUserByAccountNumberAsync(accountNumber, cancellationToken);
+        var user = await _repository.FindUserByIdentifierAsync(identifier, cancellationToken);
         if (user is null)
         {
             return null;
@@ -119,9 +119,14 @@ public class AuthenticationService : IAuthenticationService
         return user;
     }
 
-    /// <summary>Keeps the last 4 digits only, so full account numbers do not end up in logs.</summary>
-    private static string Mask(string accountNumber)
+    /// <summary>
+    /// Account numbers keep their last 4 digits only. Anything else (a username, or a mistyped value that
+    /// could be a secret) is fully hidden, so neither ends up in logs.
+    /// </summary>
+    private static string Mask(string identifier)
     {
-        return accountNumber.Length <= 4 ? "****" : new string('*', accountNumber.Length - 4) + accountNumber[^4..];
+        return SignInIdentifier.IsAccountNumber(identifier)
+            ? new string('*', identifier.Length - 4) + identifier[^4..]
+            : "****";
     }
 }

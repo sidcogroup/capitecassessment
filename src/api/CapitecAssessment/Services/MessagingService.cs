@@ -54,11 +54,55 @@ public class MessagingService : IMessagingService
         }
         finally
         {
-            await RecordAsync(userId, recipientEmail, status);
+            await RecordAsync(userId, NotificationTypes.Otp, recipientEmail, OtpSubject, OtpNotificationBody, null, status);
         }
     }
 
-    private async Task RecordAsync(long userId, string recipient, string status)
+    public async Task SendDisputeUpdateAsync(
+        long userId, string recipientEmail, Guid disputeId, string disputeReference, string disputeStatus, string note,
+        CancellationToken cancellationToken)
+    {
+        var subject = $"Update on your dispute {disputeReference}: {disputeStatus}";
+        var plainText =
+            $"Your dispute {disputeReference} is now: {disputeStatus}.\n\n" +
+            $"Note from your consultant:\n{note}\n\n" +
+            "You can view the full history of this dispute in the app.";
+        var email = new OutgoingEmail(
+            recipientEmail,
+            subject,
+            PlainText: plainText,
+            Html:
+                $"<p>Your dispute <strong>{WebUtility.HtmlEncode(disputeReference)}</strong> is now: " +
+                $"<strong>{WebUtility.HtmlEncode(disputeStatus)}</strong>.</p>" +
+                $"<p>Note from your consultant:</p><blockquote>{WebUtility.HtmlEncode(note)}</blockquote>" +
+                "<p>You can view the full history of this dispute in the app.</p>");
+
+        var type = disputeStatus == DisputeStatuses.UnderReview
+            ? NotificationTypes.DisputeProgress
+            : NotificationTypes.DisputeFinalised;
+
+        var status = NotificationStatuses.Sent;
+        try
+        {
+            await _emailSender.SendAsync(email, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            status = NotificationStatuses.Failed;
+            _logger.LogError(ex, "Sending dispute update email to user {UserId} failed", userId);
+            throw;
+        }
+        finally
+        {
+            await RecordAsync(userId, type, recipientEmail, subject, Truncate(plainText, 2000), disputeId, status);
+        }
+    }
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
+
+    private async Task RecordAsync(
+        long userId, string type, string recipient, string subject, string body, Guid? disputeId, string status)
     {
         try
         {
@@ -66,18 +110,19 @@ public class MessagingService : IMessagingService
             {
                 Id = Guid.NewGuid(),
                 UserId = userId,
-                Type = NotificationTypes.Otp,
+                Type = type,
                 Channel = "Email",
                 Recipient = recipient,
-                Subject = OtpSubject,
-                Body = OtpNotificationBody,
-                Status = status
+                Subject = Truncate(subject, 200),
+                Body = body,
+                Status = status,
+                DisputeId = disputeId
             }, CancellationToken.None); // record even if the request was aborted mid-send
         }
         catch (Exception ex)
         {
             // The audit row must never mask the outcome of the send itself.
-            _logger.LogError(ex, "Failed to record OTP notification for user {UserId}", userId);
+            _logger.LogError(ex, "Failed to record {NotificationType} notification for user {UserId}", type, userId);
         }
     }
 }
