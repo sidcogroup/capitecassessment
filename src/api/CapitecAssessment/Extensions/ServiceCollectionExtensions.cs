@@ -34,6 +34,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<IAccountService, AccountService>();
 
+        services.AddScoped<ITransactionRepository, TransactionRepository>();
+        services.AddScoped<ITransactionService, TransactionService>();
+
+        services.AddScoped<IDisputeRepository, DisputeRepository>();
+        services.AddScoped<IDisputeService, DisputeService>();
+
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IUsersService, UsersService>();
 

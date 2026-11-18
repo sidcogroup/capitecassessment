@@ -14,6 +14,11 @@ public class Dispute
     [Column("id")]
     public Guid Id { get; set; }
 
+    /// <summary>Customer-facing reference, e.g. DISP0B91CD64.</summary>
+    [Column("dispute_reference")]
+    [StringLength(50)]
+    public string DisputeReference { get; set; } = string.Empty;
+
     [Column("transaction_id")]
     public Guid TransactionId { get; set; }
 
