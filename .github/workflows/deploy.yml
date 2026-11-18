@@ -37,7 +37,26 @@ jobs:
       - name: Build solution
         run: dotnet build CapitecAssessment.slnx --configuration Release
       - name: Run unit tests
-        run: dotnet test CapitecAssessment.slnx --configuration Release --no-build
+        run: dotnet test CapitecAssessment.slnx --configuration Release --no-build | tee test-output.txt
+      - name: Read test counts
+        id: tests
+        if: github.ref == 'refs/heads/main'
+        run: |
+          line=$(grep -E '^(Passed|Failed)!' test-output.txt | tail -1)
+          echo "failed=$(echo "$line" | sed -E 's/.*Failed: *([0-9]+).*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "passed=$(echo "$line" | sed -E 's/.*Passed: *([0-9]+).*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "skipped=$(echo "$line" | sed -E 's/.*Skipped: *([0-9]+).*/\1/')" >> "$GITHUB_OUTPUT"
+      - name: Update test badge
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true   # a badge problem must never fail the pipeline
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.GIST_ID }}
+          filename: capitec-tests.json
+          label: tests
+          message: ${{ steps.tests.outputs.passed }} passed, ${{ steps.tests.outputs.skipped }} skipped, ${{ steps.tests.outputs.failed }} failed
+          color: ${{ steps.tests.outputs.failed == '0' && 'brightgreen' || 'red' }}
       - name: Lint Bicep
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
 
