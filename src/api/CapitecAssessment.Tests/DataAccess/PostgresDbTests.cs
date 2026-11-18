@@ -4,6 +4,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CapitecAssessment.Tests.DataAccess;
 
+/// <summary>
+/// Use <c>[PostgresFact]</c> instead of <c>[Fact]</c> for a test that needs a real PostgreSQL database.
+/// The test is automatically skipped (not failed) when no database is configured, e.g. in CI.
+/// </summary>
 public sealed class PostgresFactAttribute : FactAttribute
 {
     public PostgresFactAttribute()
@@ -15,6 +19,7 @@ public sealed class PostgresFactAttribute : FactAttribute
     }
 }
 
+/// <summary>Where the database tests get their connection from.</summary>
 public static class PostgresTestDb
 {
     public const string EnvironmentVariable = "CAPITEC_TEST_CONNECTION";
@@ -26,18 +31,23 @@ public static class PostgresTestDb
 }
 
 /// <summary>
-/// Run against a real, THROWAWAY PostgreSQL database that has docs/database-schema.md applied:
+/// Checks the code and the real database schema agree.
+///
+/// HOW TO RUN: point the tests at a THROWAWAY PostgreSQL database that has docs/database-schema.md applied:
 ///   set CAPITEC_TEST_CONNECTION=Host=localhost;Database=capiassesdb_test;Username=postgres;Password=...
-/// Skipped when the variable is unset (e.g. in CI).
+/// When the variable is not set, these tests are skipped.
 /// </summary>
 public class PostgresDbTests
 {
+    /// <summary>
+    /// Reads one row from every table. If any table or column the code expects is missing or misnamed,
+    /// PostgreSQL returns an error and the test fails.
+    /// </summary>
     [PostgresFact]
     public async Task EveryTable_CanBeQueried()
     {
         await using var db = PostgresTestDb.NewContext();
 
-        // Fails with a Postgres error if any mapped table/column is missing or misnamed.
         await db.Users.AsNoTracking().Take(1).ToListAsync();
         await db.UserProfiles.AsNoTracking().Take(1).ToListAsync();
         await db.UserContacts.AsNoTracking().Take(1).ToListAsync();
@@ -49,6 +59,10 @@ public class PostgresDbTests
         await db.Notifications.AsNoTracking().Take(1).ToListAsync();
     }
 
+    /// <summary>
+    /// When a user is saved, the database fills in the ID (a 10-digit number), the default role (Customer)
+    /// and the creation time.
+    /// </summary>
     [PostgresFact]
     public async Task InsertUser_UsesDatabaseGeneratedIdAndTimestamp()
     {

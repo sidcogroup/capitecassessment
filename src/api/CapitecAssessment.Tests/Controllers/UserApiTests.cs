@@ -1,103 +1,82 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Text.RegularExpressions;
 using CapitecAssessment.Abstractions.DataAccess;
-using CapitecAssessment.Abstractions.Services;
 using CapitecAssessment.Controllers;
 using CapitecAssessment.Models;
 using CapitecAssessment.Models.Response;
 using CapitecAssessment.Tests.Fakes;
+using CapitecAssessment.Tests.Support;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace CapitecAssessment.Tests.Controllers;
 
-/// <summary>Full pipeline with a real sign-in, so the session cookie is what identifies the caller.</summary>
+/// <summary>
+/// HTTP tests for <c>GET /api/v1/users/profile</c>, which returns the signed-in user's name
+/// (shown as "Hello, Lerato" in the banking app).
+///
+/// Test data:
+///   - Lerato and Thabo both have a profile with their first and last name.
+///   - A third user can sign in but has no profile saved.
+/// </summary>
 public class UserApiTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private const string LeratoAccount = "1052000101";
     private const string ThaboAccount = "1052000201";
-    private const string NoProfileAccount = "1052000301";
+    private const string AccountOfUserWithoutProfile = "1052000301";
 
     private static readonly AuthenticatedUser Lerato = new(1000000001, "lerato", UserRoles.Customer, "lerato@example.test");
     private static readonly AuthenticatedUser Thabo = new(1000000002, "thabo", UserRoles.Customer, "thabo@example.test");
-    private static readonly AuthenticatedUser NoProfile = new(1000000003, "noprofile", UserRoles.Customer, "noprofile@example.test");
+    private static readonly AuthenticatedUser UserWithoutProfile = new(1000000003, "noprofile", UserRoles.Customer, "noprofile@example.test");
 
-    private readonly WebApplicationFactory<Program> _baseFactory;
+    private const string ProfileUrl = "/api/v1/users/profile";
+
+    private readonly WebApplicationFactory<Program> _factory;
 
     public UserApiTests(WebApplicationFactory<Program> factory)
     {
-        _baseFactory = factory;
+        _factory = factory;
     }
 
-    private sealed record TestApp(HttpClient Client, FakeEmailSender Email);
+    private sealed record TestApp(HttpClient Client, FakeEmailSender Inbox);
 
-    private TestApp CreateApp()
+    private TestApp StartApi()
     {
-        var auth = new FakeAuthenticationRepository();
-        auth.AddAccount(LeratoAccount, Lerato);
-        auth.AddAccount(ThaboAccount, Thabo);
-        auth.AddAccount(NoProfileAccount, NoProfile);
+        var users = new FakeAuthenticationRepository();
+        users.AddAccount(LeratoAccount, Lerato);
+        users.AddAccount(ThaboAccount, Thabo);
+        users.AddAccount(AccountOfUserWithoutProfile, UserWithoutProfile);
 
-        var users = new FakeUserRepository();
-        users.Add(new UserProfileResponse { UserId = Lerato.UserId, FirstName = "Lerato", LastName = "Dlamini" });
-        users.Add(new UserProfileResponse { UserId = Thabo.UserId, FirstName = "Thabo", LastName = "Nkosi" });
+        // Only Lerato and Thabo have a saved profile.
+        var profiles = new FakeUserRepository();
+        profiles.Add(new UserProfileResponse { UserId = Lerato.UserId, FirstName = "Lerato", LastName = "Dlamini" });
+        profiles.Add(new UserProfileResponse { UserId = Thabo.UserId, FirstName = "Thabo", LastName = "Nkosi" });
 
-        var email = new FakeEmailSender();
-        var factory = _baseFactory.WithWebHostBuilder(builder =>
-        {
-            builder.UseSetting("Otp:HashKey", TestOtp.HashKey);
-            builder.UseSetting("RateLimiting:Authentication:PermitLimit", "1000");
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IAuthenticationRepository>();
-                services.AddSingleton<IAuthenticationRepository>(auth);
-                services.RemoveAll<INotificationRepository>();
-                services.AddSingleton<INotificationRepository, FakeNotificationRepository>();
-                services.RemoveAll<IEmailSender>();
-                services.AddSingleton<IEmailSender>(email);
-                services.RemoveAll<IUserRepository>();
-                services.AddSingleton<IUserRepository>(users);
-            });
-        });
-
-        var client = factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            BaseAddress = new Uri("https://localhost"),
-            HandleCookies = true
-        });
-
-        return new TestApp(client, email);
+        var inbox = new FakeEmailSender();
+        var client = TestApi.CreateClient(_factory, users, inbox,
+            replaceMoreServices: services => TestApi.ReplaceWith<IUserRepository>(services, profiles));
+        return new TestApp(client, inbox);
     }
 
-    private static async Task SignIn(TestApp app, string accountNumber)
-    {
-        await app.Client.PostAsJsonAsync("/api/v1/authenticate/request-otp", new { accountNumber });
-        var code = Regex.Match(app.Email.Sent.Last().PlainText, "[0-9]{6}").Value;
-        var verify = await app.Client.PostAsJsonAsync("/api/v1/authenticate/verify-otp", new { accountNumber, code });
-        Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
-    }
-
+    /// <summary>Without signing in, the profile endpoint returns 401 Unauthorized.</summary>
     [Fact]
     public async Task GetProfile_WithoutSession_Returns401()
     {
-        var app = CreateApp();
+        var app = StartApi();
 
-        var response = await app.Client.GetAsync("/api/v1/users/profile");
+        var response = await app.Client.GetAsync(ProfileUrl);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    /// <summary>Lerato signs in and gets her own first name, last name and full name.</summary>
     [Fact]
     public async Task GetProfile_ReturnsTheSignedInUsersName()
     {
-        var app = CreateApp();
-        await SignIn(app, LeratoAccount);
+        var app = StartApi();
+        await TestApi.SignInAsync(app.Client, app.Inbox, LeratoAccount);
 
-        var profile = await app.Client.GetFromJsonAsync<UserProfileResponse>("/api/v1/users/profile");
+        var profile = await app.Client.GetFromJsonAsync<UserProfileResponse>(ProfileUrl);
 
         Assert.Equal(Lerato.UserId, profile!.UserId);
         Assert.Equal("Lerato", profile.FirstName);
@@ -105,24 +84,29 @@ public class UserApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal("Lerato Dlamini", profile.FullName);
     }
 
+    /// <summary>
+    /// The same URL returns Thabo's name when Thabo is signed in. This proves the API decides whose
+    /// profile to return from the session cookie, not from anything the caller sends.
+    /// </summary>
     [Fact]
     public async Task GetProfile_UsesTheCookieNotTheRequest_OtherUserSeesTheirOwn()
     {
-        var app = CreateApp();
-        await SignIn(app, ThaboAccount);
+        var app = StartApi();
+        await TestApi.SignInAsync(app.Client, app.Inbox, ThaboAccount);
 
-        var profile = await app.Client.GetFromJsonAsync<UserProfileResponse>("/api/v1/users/profile");
+        var profile = await app.Client.GetFromJsonAsync<UserProfileResponse>(ProfileUrl);
 
         Assert.Equal("Thabo Nkosi", profile!.FullName);
     }
 
+    /// <summary>A signed-in user who has no saved profile gets 404 Not Found with a clear error title.</summary>
     [Fact]
     public async Task GetProfile_UserWithoutProfile_Returns404()
     {
-        var app = CreateApp();
-        await SignIn(app, NoProfileAccount);
+        var app = StartApi();
+        await TestApi.SignInAsync(app.Client, app.Inbox, AccountOfUserWithoutProfile);
 
-        var response = await app.Client.GetAsync("/api/v1/users/profile");
+        var response = await app.Client.GetAsync(ProfileUrl);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
