@@ -74,14 +74,15 @@ CREATE TABLE cadb.transactions (
 CREATE INDEX ix_txn_account_date ON cadb.transactions (account_id, transaction_date DESC);
 
 CREATE TABLE cadb.disputes (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id  UUID NOT NULL REFERENCES cadb.transactions(id),
-  reason          VARCHAR(100) NOT NULL,
-  details         VARCHAR(1000),
-  status          VARCHAR(20) NOT NULL DEFAULT 'Submitted'
-                  CHECK (status IN ('Submitted','Under Review','Resolved','Rejected')),
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  dispute_reference VARCHAR (50),
+  transaction_id    UUID NOT NULL REFERENCES cadb.transactions(id),
+  reason            VARCHAR(100) NOT NULL,
+  details           VARCHAR(1000),
+  status            VARCHAR(20) NOT NULL DEFAULT 'Submitted'
+                    CHECK (status IN ('Submitted','Under Review','Resolved','Rejected')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX ux_dispute_open_per_txn
