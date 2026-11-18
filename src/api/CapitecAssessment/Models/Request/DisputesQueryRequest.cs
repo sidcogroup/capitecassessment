@@ -8,7 +8,6 @@ public sealed class DisputesQueryRequest
     public const int DefaultPageSize = 10;
     public const int MaxPageSize = 50;
 
-    /// <summary>1-based page number.</summary>
     [Range(1, 1_000_000, ErrorMessage = "Page must be 1 or greater.")]
     public int Page { get; init; } = 1;
 

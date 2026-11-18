@@ -35,7 +35,7 @@ public class AuthenticateController : ControllerBase
 
     /// <summary>Step 1: emails a one-time pin to the user who owns the account number.</summary>
     /// <remarks>Always returns the same 200 response for a well-formed account number, registered or not.</remarks>
-    [HttpPost("request-otp")]
+    [HttpPost]
     [AllowAnonymous]
     [EnableRateLimiting(AuthenticationRateLimitOptions.PolicyName)]
     [ProducesResponseType(StatusCodes.Status200OK)]

@@ -12,6 +12,6 @@ public sealed class UpdateDisputeRequest
     public string Status { get; init; } = string.Empty;
 
     /// <summary>Recorded in the dispute history and sent to the client. Matches dispute_status_history.note (500).</summary>
-    [Required(AllowEmptyStrings = false), StringLength(500)]
+    [Required(AllowEmptyStrings = false), StringLength(500), SafeText]
     public string Note { get; init; } = string.Empty;
 }

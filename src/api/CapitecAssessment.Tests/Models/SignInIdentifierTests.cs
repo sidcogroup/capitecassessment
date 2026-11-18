@@ -19,6 +19,11 @@ public class SignInIdentifierTests
     [InlineData("has space", false)]
     [InlineData("bad!name", false)]
     [InlineData("١٢٣٤٥٦٧٨٩٠", false)]   // Arabic-Indic digits
+    [InlineData("1052000101\n", false)] // trailing newline (would pass with $)
+    [InlineData("consultant1\n", false)]
+    [InlineData("1052000101' OR '1'='1", false)]
+    [InlineData("admin'; DROP TABLE users;--", false)]
+    [InlineData("1052000101;--", false)]
     public void IsValid_AcceptsAnAccountNumberOrAUsernameContainingALetter(string? value, bool expected) =>
         Assert.Equal(expected, SignInIdentifier.IsValid(value));
 
