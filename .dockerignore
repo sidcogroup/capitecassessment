@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/appsettings.local.json
+**/appsettings.*.local.json
+.git/
+.github/
+docs/
+infra/
+src/api/CapitecAssessment.Tests/
+TestResults/
+**/Dockerfile*
+**/.dockerignore

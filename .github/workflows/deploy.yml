@@ -1,0 +1,139 @@
+name: Build and Deploy
+
+# feat/* branches and PRs: CI only  -> ci (unit tests, solution build, Bicep lint)
+# main:                     CI + CD  -> ci -> build image -> deploy-dev (validate + what-if only)
+#                                          -> deploy-prod (real deployment)
+#
+# For the assessment there is ONE Azure resource group. The "Development" stage runs the
+# full pre-deployment checks against it but changes nothing; the "Production" stage is the
+# only stage that actually deploys.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'feat/**']
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: capitecassessment
+  RESOURCE_GROUP: "project-bank"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: ci (build, test, bicep lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build solution
+        run: dotnet build CapitecAssessment.slnx --configuration Release
+      - name: Run unit tests
+        run: dotnet test CapitecAssessment.slnx --configuration Release --no-build
+      - name: Lint Bicep
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+  build:
+    name: build image
+    runs-on: ubuntu-latest
+    needs: ci
+    # Deployment path runs on main only
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-dev:
+    name: deploy-dev (validate only)
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: Development
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Validate and what-if (no changes applied)
+        env:
+          IMAGE: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          ACR_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          ACR_USER: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          ACR_PASS: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+          DB_CONN: ${{ secrets.NEONDB_CONNECTIONSTRING }}
+          OTP_KEY: ${{ secrets.OTP_HASHKEY }}
+          EMAIL_CONN: ${{ secrets.AZURE_EMAIL_CONNECTIONSTRING }}
+          EMAIL_SENDER: ${{ secrets.AZURE_EMAIL_SENDER_ADDRESS }}
+        run: |
+          set -euo pipefail
+          ARGS=(--resource-group "$RESOURCE_GROUP" --template-file infra/main.bicep
+            --parameters infra/parameters.json
+            --parameters environmentType=Development containerImage="$IMAGE" acrServer="$ACR_SERVER" \
+              acrUsername="$ACR_USER" acrPassword="$ACR_PASS" databaseConnectionString="$DB_CONN" \
+              otpHashKey="$OTP_KEY" emailConnectionString="$EMAIL_CONN" emailSenderAddress="$EMAIL_SENDER")
+          az deployment group validate "${ARGS[@]}"
+          az deployment group what-if "${ARGS[@]}"
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: Production
+      url: ${{ steps.deploy-infra.outputs.containerAppUrl }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Deploy infrastructure and container app
+        id: deploy-infra
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          resourceGroupName: ${{ env.RESOURCE_GROUP }}
+          template: ./infra/main.bicep
+          parameters: >-
+            ./infra/parameters.json
+            environmentType=Production
+            containerImage=${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            acrServer=${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+            acrUsername=${{ secrets.AZURE_REGISTRY_USERNAME }}
+            acrPassword=${{ secrets.AZURE_REGISTRY_PASSWORD }}
+            databaseConnectionString=${{ secrets.NEONDB_CONNECTIONSTRING }}
+            otpHashKey=${{ secrets.OTP_HASHKEY }}
+            emailConnectionString=${{ secrets.AZURE_EMAIL_CONNECTIONSTRING }}
+            emailSenderAddress=${{ secrets.AZURE_EMAIL_SENDER_ADDRESS }}
+          failOnStdErr: false
+      - name: Smoke test
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "${{ steps.deploy-infra.outputs.containerAppUrl }}/api/v1/health"; then exit 0; fi
+            sleep 10
+          done
+          echo "Health check failed" && exit 1
