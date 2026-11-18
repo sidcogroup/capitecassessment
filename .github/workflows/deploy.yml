@@ -111,6 +111,32 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Build secret parameters file
+        env:
+          IMAGE: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          ACR_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io
+          ACR_USER: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          ACR_PASS: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+          DB_CONN: ${{ secrets.NEONDB_CONNECTIONSTRING }}
+          OTP_KEY: ${{ secrets.OTP_HASHKEY }}
+          EMAIL_CONN: ${{ secrets.AZURE_EMAIL_CONNECTIONSTRING }}
+          EMAIL_SENDER: ${{ secrets.AZURE_EMAIL_SENDER_ADDRESS }}
+        run: |
+          jq -n '{
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            contentVersion: "1.0.0.0",
+            parameters: {
+              environmentType:          {value: "Production"},
+              containerImage:           {value: env.IMAGE},
+              acrServer:                {value: env.ACR_SERVER},
+              acrUsername:              {value: env.ACR_USER},
+              acrPassword:              {value: env.ACR_PASS},
+              databaseConnectionString: {value: env.DB_CONN},
+              otpHashKey:               {value: env.OTP_KEY},
+              emailConnectionString:    {value: env.EMAIL_CONN},
+              emailSenderAddress:       {value: env.EMAIL_SENDER}
+            }
+          }' > "$RUNNER_TEMP/secrets.parameters.json"
       - name: Deploy infrastructure and container app
         id: deploy-infra
         uses: azure/arm-deploy@v2
@@ -118,17 +144,7 @@ jobs:
           scope: resourcegroup
           resourceGroupName: ${{ env.RESOURCE_GROUP }}
           template: ./infra/main.bicep
-          parameters: >-
-            ./infra/parameters.json
-            environmentType=Production
-            containerImage=${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            acrServer=${{ secrets.AZURE_CONTAINER_REGISTRY }}.azurecr.io
-            acrUsername=${{ secrets.AZURE_REGISTRY_USERNAME }}
-            acrPassword=${{ secrets.AZURE_REGISTRY_PASSWORD }}
-            databaseConnectionString=${{ secrets.NEONDB_CONNECTIONSTRING }}
-            otpHashKey=${{ secrets.OTP_HASHKEY }}
-            emailConnectionString=${{ secrets.AZURE_EMAIL_CONNECTIONSTRING }}
-            emailSenderAddress=${{ secrets.AZURE_EMAIL_SENDER_ADDRESS }}
+          parameters: ./infra/parameters.json ${{ runner.temp }}/secrets.parameters.json
           failOnStdErr: false
       - name: Smoke test
         run: |
